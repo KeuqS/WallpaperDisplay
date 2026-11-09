@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Medya Oynatıcı</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
+    body { display: grid; place-items: center; font-family: system-ui, sans-serif; }
+    #stage { width: 100vw; height: 100vh; display: grid; place-items: center; background: #000; }
+    #stage img, #stage video, #stage audio { max-width: 100%; max-height: 100%; width: 100%; height: 100%; object-fit: contain; }
+    #stage iframe { width: 100%; height: 100%; border: 0; }
+    #stage audio { width: min(560px, 90vw); height: auto; }
+    #empty { color: #aaa; text-align: center; padding: 24px; }
+    #empty strong { display: block; color: #fff; font-size: 1.25rem; margin-bottom: 8px; }
+    #chooser { width: min(520px, 90vw); padding: 24px; border: 1px solid #333; border-radius: 16px; background: #111; color: #ddd; }
+    #chooser h2 { margin: 0 0 8px; color: #fff; font-size: 1.25rem; }
+    #chooser p { margin: 0 0 16px; color: #aaa; }
+    #chooser input { width: 100%; margin: 7px 0; padding: 11px; border: 1px solid #444; border-radius: 8px; background: #080808; color: #eee; }
+    #chooser button { margin-top: 8px; padding: 10px 15px; border: 0; border-radius: 8px; background: #4f8cff; color: #fff; font-weight: 700; cursor: pointer; }
+    #hint { position: fixed; right: 16px; bottom: 16px; padding: 9px 12px; border: 1px solid #333; border-radius: 10px; color: #ddd; background: #111c; font-size: 13px; opacity: 0; transition: opacity .25s; }
+    body:hover #hint { opacity: 1; }
+  </style>
+</head>
+<body>
+  <main id="stage"><div id="empty"><strong>Medya bekleniyor</strong>control.html üzerinden bir fotoğraf, video veya bağlantı seçin.</div></main>
+  <div id="hint">Tam ekran: çift tıklayın veya F11</div>
+  <script>
+    const DB_NAME = 'fullscreen-media-player';
+    const STORE = 'media';
+    const stage = document.getElementById('stage');
+    const SERVER_MODE = location.protocol !== 'file:';
+    const NATIVE_MODE = location.protocol === 'file:';
+    let currentObjectUrl = null;
+    let currentSignature = '';
+
+    function openDb() {
+      return new Promise((resolve, reject) => {
+        const request = indexedDB.open(DB_NAME, 1);
+        request.onupgradeneeded = () => request.result.createObjectStore(STORE);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+    }
+    async function getSavedFile() {
+      const db = await openDb();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE, 'readonly');
+        const req = tx.objectStore(STORE).get('file');
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => reject(req.error);
+      });
+    }
+    function guessKind(url, mime = '') {
+      if (/youtube\.com\/watch\?[^#]*v=|youtu\.be\//i.test(url)) return 'youtube';
+      if (mime.startsWith('image/') || /\.(avif|gif|jpe?g|png|svg|webp)(?:[?#].*)?$/i.test(url)) return 'image';
+      if (mime.startsWith('audio/') || /\.(aac|flac|m4a|mp3|ogg|wav)(?:[?#].*)?$/i.test(url)) return 'audio';
+      return 'video';
+    }
+    function youtubeEmbed(url) {
+      try {
+        const parsed = new URL(url);
+        let id = parsed.hostname.includes('youtu.be') ? parsed.pathname.slice(1) : parsed.searchParams.get('v');
+        if (!id && parsed.pathname.startsWith('/shorts/')) id = parsed.pathname.split('/')[2];
+        return id ? 'https://www.youtube-nocookie.com/embed/' + encodeURIComponent(id) + '?autoplay=1&mute=1&loop=1&playlist=' + encodeURIComponent(id) + '&playsinline=1&controls=0&modestbranding=1&rel=0&iv_load_policy=3&disablekb=1&fs=0&cc_load_policy=0' : '';
+      } catch { return ''; }
+    }
+    function showMessage(title, detail) {
+      stage.innerHTML = '<div id="empty"><strong>' + title + '</strong>' + detail + '</div>';
+    }
+    function renderChooser(message = 'Bu tarayıcıda kullanılacak medya dosyasını seçin veya doğrudan bağlantı girin.') {
+      stage.innerHTML = '<div id="chooser"><h2>Medya seçin</h2><p>' + message + '</p><input id="localMedia" type="file" accept="image/*,video/*,audio/*"><input id="mediaUrl" type="url" placeholder="https://site.com/video.mp4"><button id="loadMedia">Oynat</button></div>';
+      document.getElementById('loadMedia').onclick = () => {
+        const file = document.getElementById('localMedia').files[0];
+        const url = document.getElementById('mediaUrl').value.trim();
+        if (file) {
+          if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
+          currentObjectUrl = URL.createObjectURL(file);
+          currentSignature = 'direct:' + [file.name, file.size, file.lastModified].join(':');
+          show(currentObjectUrl, guessKind(file.name, file.type));
+        } else if (url) {
+          currentSignature = 'direct-url:' + url;
+          show(url, guessKind(url));
+        }
+      };
+    }
+    function show(source, kind) {
+      stage.replaceChildren();
+      if (kind === 'youtube') {
+        const embed = youtubeEmbed(source);
+        if (!embed) { showMessage('Medya yüklenemedi', 'YouTube bağlantısı tanınamadı.'); return; }
+        const iframe = document.createElement('iframe');
+        iframe.src = embed;
+        iframe.allow = 'autoplay; fullscreen; encrypted-media';
+        iframe.allowFullscreen = true;
+        stage.appendChild(iframe);
+        return;
+      }
+      const el = document.createElement(kind);
+      el.src = source;
+      if (kind === 'video') { el.autoplay = true; el.muted = true; el.loop = true; el.playsInline = true; el.controls = false; }
+      if (kind === 'audio') { el.autoplay = true; el.loop = true; el.controls = true; }
+      el.addEventListener('error', () => {
+        showMessage('Medya yüklenemedi', 'Bağlantının doğrudan bir medya dosyasına ait olduğundan emin olun.');
+      }, { once: true });
+      stage.appendChild(el);
+      if (kind === 'video') el.play().catch(() => {});
+    }
+    window.setNativeMedia = (source, kind) => { currentSignature = 'native:' + source; show(source, guessKind(source, kind || '')); };
+    window.clearNativeMedia = () => { currentSignature = ''; showMessage('Medya bekleniyor', 'Uygulama arayüzünden bir medya seçin.'); };
+    async function refreshRemote() {
+      const response = await fetch('/api/state', { cache: 'no-store' });
+      const state = await response.json();
+      const signature = String(state.version || state.url || state.type || 'empty');
+      if (signature === currentSignature) return;
+      currentSignature = signature;
+      if (state.type === 'media' || state.type === 'url') {
+        show(state.url, guessKind(state.url, state.kind || ''));
+      } else {
+        stage.innerHTML = '<div id="empty"><strong>Medya bekleniyor</strong>control.html üzerinden seçim yapın.</div>';
+      }
+    }
+    async function refresh() {
+      try {
+        if (NATIVE_MODE) return;
+        if (SERVER_MODE) { await refreshRemote(); return; }
+        const settings = JSON.parse(localStorage.getItem('fullscreen-media-settings') || '{}');
+        const file = await getSavedFile();
+        if (file) {
+          const blob = file.blob || file;
+          const signature = 'file:' + [file.name || '', blob.size || 0, blob.lastModified || 0, blob.type || ''].join(':');
+          if (signature === currentSignature) return;
+          if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
+          currentObjectUrl = URL.createObjectURL(blob);
+          currentSignature = signature;
+          show(currentObjectUrl, guessKind(file.name || '', blob.type));
+        } else if (settings.url) {
+          const signature = 'url:' + settings.url;
+          if (signature === currentSignature) return;
+          if (currentObjectUrl) { URL.revokeObjectURL(currentObjectUrl); currentObjectUrl = null; }
+          currentSignature = signature;
+          show(settings.url, settings.kind || guessKind(settings.url));
+        } else if (!currentSignature) {
+          renderChooser();
+        }
+      } catch (error) {
+        console.error(error);
+        if (!currentSignature) showMessage('Medya bekleniyor', 'control.html üzerinden bir seçim yapın.');
+      }
+    }
+    document.addEventListener('dblclick', () => document.documentElement.requestFullscreen?.().catch(() => {}));
+    document.addEventListener('keydown', event => { if (event.key === 'f' || event.key === 'F') document.documentElement.requestFullscreen?.().catch(() => {}); });
+    window.addEventListener('storage', refresh);
+    refresh();
+    setInterval(refresh, SERVER_MODE ? 1000 : 2500);
+  </script>
+</body>
+</html>
