@@ -1,0 +1,11 @@
+yt-dlp is bundled with Wallpaper Display.
+
+yt-dlp is licensed under the Unlicense. The standalone release may also
+contain components distributed under their own licenses. The upstream project
+and full licensing information are available at:
+
+https://github.com/yt-dlp/yt-dlp
+https://github.com/yt-dlp/yt-dlp/blob/master/LICENSE
+
+This application invokes yt-dlp as a separate bundled executable and does not
+modify its source code.
